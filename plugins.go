@@ -6,7 +6,7 @@ import (
 	"github.com/crosbymichael/skydock/docker"
 	"github.com/crosbymichael/skydock/utils"
 	"github.com/robertkrimen/otto"
-	"github.com/skynetservices/skydns/msg"
+	"skydock/msg"
 	"io/ioutil"
 )
 

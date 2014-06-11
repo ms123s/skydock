@@ -6,22 +6,26 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/crosbymichael/log"
 	"github.com/crosbymichael/skydock/docker"
 	"github.com/crosbymichael/skydock/utils"
 	influxdb "github.com/influxdb/influxdb-go"
-	"github.com/skynetservices/skydns/client"
-	"github.com/skynetservices/skydns/msg"
 	"os"
 	"sync"
 	"time"
+	"strings"
+	"skydock/client"
+	"skydock/msg"
+	"github.com/coreos/go-etcd/etcd"
 )
 
 var (
 	pathToSocket        string
 	domain              string
+	domainRev              string
 	environment         string
 	skydnsUrl           string
 	skydnsContainerName string
@@ -31,11 +35,16 @@ var (
 	numberOfHandlers    int
 	pluginFile          string
 
+	etcdClient *etcd.Client
 	skydns       Skydns
 	dockerClient docker.Docker
 	plugins      *pluginRuntime
 	running      = make(map[string]struct{})
 	runningLock  = sync.Mutex{}
+	machines    = strings.Split(os.Getenv("ETCD_MACHINES"), ",")      // list of URLs to etcd
+	machine     = ""
+	tlskey      = os.Getenv("ETCD_TLSKEY")                            // TLS private key path
+	tlspem      = os.Getenv("ETCD_TLSPEM")                            // X509 certificate
 )
 
 func init() {
@@ -49,6 +58,9 @@ func init() {
 	flag.IntVar(&beat, "beat", 0, "heartbeat interval")
 	flag.IntVar(&numberOfHandlers, "workers", 3, "number of concurrent workers")
 	flag.StringVar(&pluginFile, "plugins", "/plugins/default.js", "file containing javascript plugins (plugins.js)")
+	flag.StringVar(&machine, "machines", "", "machine address(es) running etcd")
+	flag.StringVar(&tlskey, "tls-key", "", "TLS Private Key path")
+	flag.StringVar(&tlspem, "tls-pem", "", "X509 Certificate")
 
 	flag.Parse()
 }
@@ -97,6 +109,28 @@ func setupLogger() error {
 		return err
 	}
 	return nil
+}
+
+func newEtcdClient() (client *etcd.Client) {
+	// set default if not specified in env
+	if len(machines) == 1 && machines[0] == "" {
+		machines[0] = "http://127.0.0.1:4001"
+
+	}
+	// override if we have a commandline flag as well
+	if machine != "" {
+		machines = strings.Split(machine, ",")	
+	}
+	if strings.HasPrefix(machines[0], "https://") {
+		var err error
+		if client, err = etcd.NewTLSClient(machines, tlspem, tlskey, ""); err != nil {
+			log.Logf(log.ERROR, err.Error())
+		}
+	} else {
+		client = etcd.NewClient(machines)
+	}
+	client.SyncCluster()
+	return client
 }
 
 func heartbeat(uuid string) {
@@ -153,14 +187,14 @@ func restoreContainers() error {
 			}
 			continue
 		}
-
+		key := etcdKey(container.Name);
 		service, err := plugins.createService(container)
 		if err != nil {
 			// doing a fatal here because we cannot do much if the plugins
 			// return an invalid service or error
 			fatal(err)
 		}
-		if err := sendService(uuid, service); err != nil {
+		if err := sendService(key, service); err != nil {
 			log.Logf(log.ERROR, "failed to send %s to skydns on restore: %s", uuid, err)
 		}
 	}
@@ -169,8 +203,13 @@ func restoreContainers() error {
 
 // sendService sends the uuid and service data to skydns
 func sendService(uuid string, service *msg.Service) error {
-	log.Logf(log.INFO, "adding %s (%s) to skydns", uuid, service.Name)
-	if err := skydns.Add(uuid, service); err != nil {
+	b, err := json.Marshal(service)
+	if err != nil {
+		fatal(err)
+	}
+	log.Logf(log.INFO, "adding %s (%s) to skydns,%s", uuid, service.Name,string(b))
+	_, err = etcdClient.Create(uuid, string(b), uint64(ttl))
+	if err != nil {
 		// ignore erros for conflicting uuids and start the heartbeat again
 		if err != client.ErrConflictingUUID {
 			return err
@@ -182,9 +221,18 @@ func sendService(uuid string, service *msg.Service) error {
 	return nil
 }
 
-func removeService(uuid string) error {
-	log.Logf(log.INFO, "removing %s from skydns", uuid)
-	return skydns.Delete(uuid)
+func removeService(uuid string,image string) error {
+	container, err := dockerClient.FetchContainer(uuid, image)
+	if err != nil {
+		if err != docker.ErrImageNotTagged {
+			return err
+		}
+		return nil
+	}
+	key := etcdKey(container.Name);
+	log.Logf(log.INFO, "removing %s,%s from skydns", uuid,key)
+	_, err2 := etcdClient.Delete(key, false)
+	return err2
 }
 
 func addService(uuid, image string) error {
@@ -203,26 +251,29 @@ func addService(uuid, image string) error {
 		fatal(err)
 	}
 
-	if err := sendService(uuid, service); err != nil {
+	key := etcdKey(container.Name);
+	if err := sendService(key, service); err != nil {
 		return err
 	}
 	return nil
 }
 
 func updateService(uuid string, ttl int) error {
-	return skydns.Update(uuid, uint32(ttl))
+	_, err := etcdClient.Update(uuid, "", uint64(ttl))
+	return err
 }
 
 func eventHandler(c chan *docker.Event, group *sync.WaitGroup) {
 	defer group.Done()
 
 	for event := range c {
-		log.Logf(log.DEBUG, "received event (%s) %s %s", event.Status, event.ContainerId, event.Image)
+		b, _ := json.Marshal(event)
+		log.Logf(log.DEBUG, "received event (%s): %s", event.Status, string(b))
 		uuid := utils.Truncate(event.ContainerId)
 
 		switch event.Status {
 		case "die", "stop", "kill":
-			if err := removeService(uuid); err != nil {
+			if err := removeService(uuid,event.Image); err != nil {
 				log.Logf(log.ERROR, "error removing %s from skydns: %s", uuid, err)
 			}
 		case "start", "restart":
@@ -237,6 +288,20 @@ func fatal(err error) {
 	fmt.Fprintf(os.Stderr, "%s\n", err)
 	os.Exit(1)
 
+}
+
+func reverse(s string) string{
+	sa := strings.Split(s,".")
+	for i, j := 0, len(sa)-1; i < j; i, j = i+1, j-1 {
+        sa[i], sa[j] = sa[j], sa[i]
+  }
+	return strings.Join(sa,"/");
+}
+
+func etcdKey(name string) string{
+	key := fmt.Sprintf("/skydns/%s%s", domainRev, name);
+	log.Logf(log.INFO, "etcdKey:%s", key)
+	return key;
 }
 
 func main() {
@@ -277,7 +342,14 @@ func main() {
 		fatal(err)
 	}
 
-	log.Logf(log.DEBUG, "starting restore of containers")
+	etcdClient =  newEtcdClient()
+	if etcdClient == nil  {
+		log.Logf(log.FATAL, "error connecting to etcd")
+		//fatal("XXX")
+	}
+
+	domainRev = reverse(domain);
+	log.Logf(log.DEBUG, "domainRev:%s", domainRev)
 	if err := restoreContainers(); err != nil {
 		log.Logf(log.FATAL, "error restoring containers: %s", err)
 		fatal(err)
