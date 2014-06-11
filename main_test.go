@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/crosbymichael/skydock/docker"
-	"github.com/skynetservices/skydns/client"
-	"github.com/skynetservices/skydns/msg"
+	"github.com/ms123s/skydock/docker"
+	"github.com/ms123s/skydock/client"
+	"github.com/ms123s/skydock/msg"
 	"sync"
 	"testing"
 	"time"
