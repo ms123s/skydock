@@ -1,4 +1,4 @@
-#### This fork has some changes needed to work with skysns v2
+#### This fork has some changes needed to work with [skydns v2](https://github.com/skynetservices/skydns)
 
 
 ### Skydock - Automagic Service Discovery for [Docker](https://github.com/dotcloud/docker)
