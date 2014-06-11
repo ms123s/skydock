@@ -1,3 +1,6 @@
+#### This fork has some changes needed to work with skysns v2
+
+
 ### Skydock - Automagic Service Discovery for [Docker](https://github.com/dotcloud/docker)
 [![Build Status](https://travis-ci.org/crosbymichael/skydock.png)](https://travis-ci.org/crosbymichael/skydock)
 
