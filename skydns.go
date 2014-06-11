@@ -1,7 +1,7 @@
 package main
 
 import (
-	"skydock/msg"
+	"github.com/ms123s/skydock/msg"
 )
 
 // Interface to allow mocking of the

@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/miekg/dns"
-	"skydock/msg"
+	"github.com/ms123s/skydock/msg"
 	"io"
 	"net/http"
 	"strconv"
