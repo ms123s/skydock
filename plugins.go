@@ -7,6 +7,7 @@ import (
 	"github.com/ms123s/skydock/utils"
 	"github.com/robertkrimen/otto"
 	"github.com/ms123s/skydock/msg"
+	"time"
 	"io/ioutil"
 )
 
@@ -58,6 +59,7 @@ func (r *pluginRuntime) createService(container *docker.Container) (*msg.Service
 	}
 	service.TTL = uint32(rawTTL)
 	service.Port = uint16(rawPort)
+	service.Expires = time.Now().Add(30);
 
 	// I'm glad that is over
 	return service, nil
